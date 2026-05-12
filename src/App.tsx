@@ -24,9 +24,9 @@ import {
   Lightbulb,
   Video,
   KeyRound,
-  Save,
-  Trash2,
-  ShieldCheck
+  RefreshCw,
+  ShieldCheck,
+  SlidersHorizontal
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -40,13 +40,15 @@ import {
   Cell
 } from 'recharts';
 import {
-  API_KEY_STORAGE_KEY,
+  fetchAiConfig,
   analyzeProductData,
   generateDesignImage,
   iterateDesign,
+  type AiRequestOptions,
   type AnalysisResult,
+  type ProviderOption,
   type ProductDirection
-} from './services/geminiService';
+} from './services/aiService';
 import { cn } from './lib/utils';
 
 // --- Types ---
@@ -164,17 +166,44 @@ export default function App() {
   const [iterationFeedback, setIterationFeedback] = useState('');
   const [isIterating, setIsIterating] = useState(false);
   const [currentPrompt, setCurrentPrompt] = useState('');
-  const [apiKey, setApiKey] = useState('');
-  const [apiKeyDraft, setApiKeyDraft] = useState('');
+  const [providers, setProviders] = useState<ProviderOption[]>([]);
+  const [selectedProviderId, setSelectedProviderId] = useState('');
+  const [textModel, setTextModel] = useState('');
+  const [imageModel, setImageModel] = useState('');
   const [settingsMessage, setSettingsMessage] = useState('');
   const [actionError, setActionError] = useState('');
-  const hasApiKey = apiKey.trim().length > 0;
+  const selectedProvider = providers.find(provider => provider.id === selectedProviderId);
+  const enabledProviders = providers.filter(provider => provider.enabled);
+  const hasProvider = Boolean(selectedProvider?.enabled);
+  const selectedProviderSupportsImages = Boolean(selectedProvider?.supportsImages);
+  const aiOptions: AiRequestOptions = {
+    providerId: selectedProviderId,
+    textModel,
+    imageModel,
+  };
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const savedApiKey = window.localStorage.getItem(API_KEY_STORAGE_KEY) || '';
-    setApiKey(savedApiKey);
-    setApiKeyDraft(savedApiKey);
+    let mounted = true;
+
+    fetchAiConfig()
+      .then((config) => {
+        if (!mounted) return;
+        setProviders(config.providers);
+        const firstEnabled = config.providers.find(provider => provider.enabled) || config.providers[0];
+        if (firstEnabled) {
+          setSelectedProviderId(firstEnabled.id);
+          setTextModel(firstEnabled.defaultTextModel);
+          setImageModel(firstEnabled.defaultImageModel);
+        }
+      })
+      .catch((error) => {
+        console.error("加载 AI 配置失败:", error);
+        setActionError('无法加载后端 AI 配置，请检查部署环境。');
+      });
+
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   const engines = [
@@ -201,30 +230,40 @@ export default function App() {
     }
   ];
 
-  const handleSaveApiKey = () => {
-    const nextKey = apiKeyDraft.trim();
-    if (nextKey) {
-      window.localStorage.setItem(API_KEY_STORAGE_KEY, nextKey);
-      setSettingsMessage('Gemini API Key 已保存到本机浏览器。');
-    } else {
-      window.localStorage.removeItem(API_KEY_STORAGE_KEY);
-      setSettingsMessage('Gemini API Key 已清除。');
-    }
-    setApiKey(nextKey);
+  const handleProviderChange = (providerId: string) => {
+    const provider = providers.find(item => item.id === providerId);
+    setSelectedProviderId(providerId);
+    setTextModel(provider?.defaultTextModel || '');
+    setImageModel(provider?.defaultImageModel || '');
+    setSettingsMessage('');
     setActionError('');
   };
 
-  const handleClearApiKey = () => {
-    window.localStorage.removeItem(API_KEY_STORAGE_KEY);
-    setApiKey('');
-    setApiKeyDraft('');
-    setSettingsMessage('Gemini API Key 已清除。');
+  const handleRefreshProviders = async () => {
+    try {
+      const config = await fetchAiConfig();
+      setProviders(config.providers);
+      const current = config.providers.find(provider => provider.id === selectedProviderId);
+      if (!current) {
+        const firstEnabled = config.providers.find(provider => provider.enabled) || config.providers[0];
+        if (firstEnabled) {
+          setSelectedProviderId(firstEnabled.id);
+          setTextModel(firstEnabled.defaultTextModel);
+          setImageModel(firstEnabled.defaultImageModel);
+        }
+      }
+      setSettingsMessage('后端供应商配置已刷新。');
+      setActionError('');
+    } catch (error) {
+      console.error("刷新 AI 配置失败:", error);
+      setActionError('刷新后端 AI 配置失败。');
+    }
   };
 
   const handleAnalyze = async () => {
     if (!inputData.trim() && !keyword.trim()) return;
-    if (!hasApiKey) {
-      setActionError('请先在系统设置中保存 Gemini API Key。');
+    if (!hasProvider) {
+      setActionError('请先在系统设置中选择一个已配置的 AI 供应商。');
       setActiveTab('settings');
       return;
     }
@@ -233,7 +272,7 @@ export default function App() {
     setActionError('');
     try {
       const combinedData = `关键词: ${keyword}\n补充数据: ${inputData}`;
-      const res = await analyzeProductData(selectedEngine, combinedData, apiKey);
+      const res = await analyzeProductData(selectedEngine, combinedData, aiOptions);
       setResult(res);
       setSelectedDirectionIndex(0);
       setCurrentPrompt(res.directions[0].designPrompts.mj);
@@ -242,7 +281,7 @@ export default function App() {
       setAnalyzeSubTab('market');
     } catch (error) {
       console.error("分析失败:", error);
-      setActionError('分析失败，请检查 Gemini API Key、网络状态或模型权限。');
+      setActionError(error instanceof Error ? error.message : '分析失败，请检查后端模型配置。');
     } finally {
       setIsAnalyzing(false);
     }
@@ -257,21 +296,25 @@ export default function App() {
 
   const handleGenerateImage = async () => {
     if (!currentPrompt) return;
-    if (!hasApiKey) {
-      setActionError('请先在系统设置中保存 Gemini API Key。');
+    if (!hasProvider) {
+      setActionError('请先在系统设置中选择一个已配置的 AI 供应商。');
       setActiveTab('settings');
+      return;
+    }
+    if (!selectedProviderSupportsImages) {
+      setActionError('当前供应商没有配置图片生成能力，请切换供应商或只复制提示词使用。');
       return;
     }
 
     setIsGenerating(true);
     setActionError('');
     try {
-      const img = await generateDesignImage(currentPrompt, apiKey);
+      const img = await generateDesignImage(currentPrompt, aiOptions);
       setGeneratedImage(img);
       setActiveTab('execute');
     } catch (error) {
       console.error("生成图片失败:", error);
-      setActionError('生成图片失败，请检查 Gemini API Key、网络状态或图片模型权限。');
+      setActionError(error instanceof Error ? error.message : '生成图片失败，请检查后端图片模型配置。');
     } finally {
       setIsGenerating(false);
     }
@@ -279,8 +322,8 @@ export default function App() {
 
   const handleIterate = async () => {
     if (!result || !iterationFeedback.trim()) return;
-    if (!hasApiKey) {
-      setActionError('请先在系统设置中保存 Gemini API Key。');
+    if (!hasProvider) {
+      setActionError('请先在系统设置中选择一个已配置的 AI 供应商。');
       setActiveTab('settings');
       return;
     }
@@ -292,17 +335,17 @@ export default function App() {
       const { newPrompt } = await iterateDesign(
         direction, 
         iterationFeedback, 
-        apiKey,
-        generatedImage || undefined
+        aiOptions,
       );
       setCurrentPrompt(newPrompt);
       setIterationFeedback('');
-      // Automatically regenerate image with new prompt
-      const img = await generateDesignImage(newPrompt, apiKey);
-      setGeneratedImage(img);
+      if (selectedProviderSupportsImages) {
+        const img = await generateDesignImage(newPrompt, aiOptions);
+        setGeneratedImage(img);
+      }
     } catch (error) {
       console.error("迭代失败:", error);
-      setActionError('迭代失败，请检查 Gemini API Key、网络状态或模型权限。');
+      setActionError(error instanceof Error ? error.message : '迭代失败，请检查后端模型配置。');
     } finally {
       setIsIterating(false);
     }
@@ -469,8 +512,8 @@ export default function App() {
                             </>
                           ) : (
                             <>
-                              {hasApiKey ? '运行决策引擎' : '配置 Gemini Key'}
-                              {hasApiKey ? <ArrowRight className="w-6 h-6" /> : <KeyRound className="w-6 h-6" />}
+                              {hasProvider ? '运行决策引擎' : '配置 AI 供应商'}
+                              {hasProvider ? <ArrowRight className="w-6 h-6" /> : <KeyRound className="w-6 h-6" />}
                             </>
                           )}
                         </button>
@@ -1148,14 +1191,14 @@ export default function App() {
                 <header className="flex items-end justify-between border-b border-zinc-100 pb-8">
                   <div>
                     <h2 className="text-4xl font-black tracking-tight mb-2">系统设置</h2>
-                    <p className="text-zinc-500">管理当前浏览器使用的 Gemini 访问凭据。</p>
+                    <p className="text-zinc-500">选择后端已配置的 AI 供应商和模型。</p>
                   </div>
                   <div className={cn(
                     "flex items-center gap-2 rounded-full px-4 py-2 text-xs font-black uppercase tracking-widest",
-                    hasApiKey ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
+                    hasProvider ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
                   )}>
                     <ShieldCheck className="h-4 w-4" />
-                    {hasApiKey ? '已配置' : '未配置'}
+                    {hasProvider ? '后端已配置' : '等待环境变量'}
                   </div>
                 </header>
 
@@ -1163,43 +1206,62 @@ export default function App() {
                   <section className="lg:col-span-2 rounded-[32px] border border-zinc-100 bg-zinc-50 p-8">
                     <div className="mb-6 flex items-center gap-3">
                       <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-black text-white">
-                        <KeyRound className="h-5 w-5" />
+                        <SlidersHorizontal className="h-5 w-5" />
                       </div>
                       <div>
-                        <h3 className="text-xl font-black tracking-tight">Gemini API Key</h3>
-                        <p className="text-sm text-zinc-500">Key 仅保存到本机浏览器 localStorage。</p>
+                        <h3 className="text-xl font-black tracking-tight">模型路由</h3>
+                        <p className="text-sm text-zinc-500">API Key 只存在于后端环境变量，不下发到浏览器。</p>
                       </div>
                     </div>
 
                     <div className="space-y-5">
-                      <input
-                        type="password"
-                        value={apiKeyDraft}
-                        onChange={(event) => {
-                          setApiKeyDraft(event.target.value);
-                          setSettingsMessage('');
-                        }}
-                        placeholder="AIza..."
-                        autoComplete="off"
-                        className="w-full rounded-2xl border border-zinc-200 bg-white px-5 py-4 font-mono text-sm outline-none transition-all focus:border-transparent focus:ring-2 focus:ring-black"
-                      />
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <label className="space-y-2">
+                          <span className="text-xs font-black text-zinc-400 uppercase tracking-widest">供应商</span>
+                          <select
+                            value={selectedProviderId}
+                            onChange={(event) => handleProviderChange(event.target.value)}
+                            className="w-full rounded-2xl border border-zinc-200 bg-white px-5 py-4 text-sm font-bold outline-none transition-all focus:border-transparent focus:ring-2 focus:ring-black"
+                          >
+                            {providers.map((provider) => (
+                              <option key={provider.id} value={provider.id}>
+                                {provider.label} {provider.enabled ? '' : '(未配置)'}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
 
-                      <div className="flex flex-wrap gap-3">
-                        <button
-                          onClick={handleSaveApiKey}
-                          className="inline-flex items-center gap-2 rounded-2xl bg-black px-6 py-3 text-sm font-bold text-white transition-all hover:shadow-xl"
-                        >
-                          <Save className="h-4 w-4" />
-                          保存
-                        </button>
-                        <button
-                          onClick={handleClearApiKey}
-                          className="inline-flex items-center gap-2 rounded-2xl border border-zinc-200 bg-white px-6 py-3 text-sm font-bold text-zinc-700 transition-all hover:bg-zinc-100"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                          清除
-                        </button>
+                        <label className="space-y-2">
+                          <span className="text-xs font-black text-zinc-400 uppercase tracking-widest">文本模型</span>
+                          <input
+                            type="text"
+                            value={textModel}
+                            onChange={(event) => setTextModel(event.target.value)}
+                            placeholder="gpt-4.1-mini / deepseek-chat / gemini-3-flash-preview"
+                            className="w-full rounded-2xl border border-zinc-200 bg-white px-5 py-4 font-mono text-sm outline-none transition-all focus:border-transparent focus:ring-2 focus:ring-black"
+                          />
+                        </label>
                       </div>
+
+                      <label className="block space-y-2">
+                        <span className="text-xs font-black text-zinc-400 uppercase tracking-widest">图片模型</span>
+                        <input
+                          type="text"
+                          value={imageModel}
+                          onChange={(event) => setImageModel(event.target.value)}
+                          disabled={!selectedProviderSupportsImages}
+                          placeholder={selectedProviderSupportsImages ? "gpt-image-1 / gemini-2.5-flash-image" : "当前供应商未配置图片生成"}
+                          className="w-full rounded-2xl border border-zinc-200 bg-white px-5 py-4 font-mono text-sm outline-none transition-all disabled:bg-zinc-100 disabled:text-zinc-400 focus:border-transparent focus:ring-2 focus:ring-black"
+                        />
+                      </label>
+
+                      <button
+                        onClick={handleRefreshProviders}
+                        className="inline-flex items-center gap-2 rounded-2xl bg-black px-6 py-3 text-sm font-bold text-white transition-all hover:shadow-xl"
+                      >
+                        <RefreshCw className="h-4 w-4" />
+                        刷新后端配置
+                      </button>
 
                       {settingsMessage && (
                         <p className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700">
@@ -1210,18 +1272,18 @@ export default function App() {
                   </section>
 
                   <section className="rounded-[32px] border border-zinc-100 bg-zinc-900 p-8 text-white">
-                    <h3 className="mb-6 text-sm font-black uppercase tracking-widest text-zinc-500">部署状态</h3>
+                    <h3 className="mb-6 text-sm font-black uppercase tracking-widest text-zinc-500">后端状态</h3>
                     <div className="space-y-5">
                       <div className="flex items-center justify-between border-b border-white/10 pb-4">
-                        <span className="text-sm text-zinc-400">GitHub Pages</span>
-                        <span className="text-sm font-black text-emerald-400">Ready</span>
+                        <span className="text-sm text-zinc-400">可用供应商</span>
+                        <span className="text-sm font-black text-emerald-400">{enabledProviders.length}/{providers.length}</span>
                       </div>
                       <div className="flex items-center justify-between border-b border-white/10 pb-4">
-                        <span className="text-sm text-zinc-400">静态构建</span>
-                        <span className="text-sm font-black text-emerald-400">Ready</span>
+                        <span className="text-sm text-zinc-400">当前供应商</span>
+                        <span className="text-sm font-black text-zinc-200">{selectedProvider?.label || '未选择'}</span>
                       </div>
                       <div className="flex items-center justify-between">
-                        <span className="text-sm text-zinc-400">共享密钥</span>
+                        <span className="text-sm text-zinc-400">浏览器密钥</span>
                         <span className="text-sm font-black text-zinc-200">Disabled</span>
                       </div>
                     </div>

@@ -1,14 +1,53 @@
 # AI Product Intelligence System
 
-AI 爆品决策系统是一个 Vite + React 前端应用，用于产品关键词分析、市场洞察、痛点拆解、产品方向定义和设计图生成。
+AI 爆品决策系统是一个 Vite + React + Vercel Functions 应用，用于产品关键词分析、市场洞察、痛点拆解、产品方向定义和设计图生成。
 
-## 使用方式
+## 架构
 
-1. 打开部署后的站点。
-2. 进入「系统设置」，填写自己的 Gemini API Key。
-3. 回到「控制面板」，输入产品关键词并运行分析。
+- 前端：Vite + React
+- 后端代理：`api/ai.js`
+- 部署：Vercel
+- 密钥：只放在后端环境变量里，不写入浏览器和 GitHub 仓库
 
-Gemini API Key 只保存在当前浏览器的 `localStorage`，不会写入 GitHub 仓库，也不会在构建时打包进静态文件。
+## AI 供应商
+
+默认支持三类后端供应商：
+
+- OpenAI：`OPENAI_API_KEY`
+- Gemini：`GEMINI_API_KEY`
+- OpenAI-compatible：`COMPATIBLE_BASE_URL` + `COMPATIBLE_API_KEY`
+
+可以在「系统设置」里切换供应商和模型。前端只会读取供应商状态和默认模型名，不会读取 API Key。
+
+## 环境变量
+
+在 Vercel Project Settings -> Environment Variables 中至少配置一个供应商：
+
+```bash
+OPENAI_API_KEY=sk-...
+OPENAI_TEXT_MODEL=gpt-4.1-mini
+OPENAI_IMAGE_MODEL=gpt-image-1
+```
+
+兼容接口示例：
+
+```bash
+COMPATIBLE_PROVIDER_LABEL=DeepSeek
+COMPATIBLE_BASE_URL=https://api.deepseek.com/v1
+COMPATIBLE_API_KEY=sk-...
+COMPATIBLE_TEXT_MODEL=deepseek-chat
+COMPATIBLE_SUPPORTS_IMAGES=false
+```
+
+Gemini 示例：
+
+```bash
+GEMINI_API_KEY=AIza...
+GEMINI_TEXT_MODEL=gemini-3-flash-preview
+GEMINI_IMAGE_MODEL=gemini-2.5-flash-image
+```
+
+高级配置可用 `AI_PROVIDERS` JSON 覆盖默认供应商列表，格式见 `.env.example`。
 
 ## 本地运行
 
@@ -17,7 +56,11 @@ npm install
 npm run dev
 ```
 
-开发服务默认运行在 `http://localhost:3000`。
+纯 Vite dev server 不会运行 Vercel Functions。需要完整联调时使用 Vercel CLI：
+
+```bash
+vercel dev
+```
 
 ## 构建
 
@@ -26,14 +69,6 @@ npm run lint
 npm run build
 ```
 
-## GitHub Pages 部署
+## 部署
 
-仓库包含 `.github/workflows/deploy.yml`。推送到 `main` 分支后，GitHub Actions 会自动安装依赖、构建 `dist`，并发布到 GitHub Pages。
-
-部署完成后的地址通常是：
-
-```text
-https://<github-user>.github.io/<repository-name>/
-```
-
-如果第一次部署没有生成页面，请在 GitHub 仓库的 `Settings -> Pages` 中确认 Source 使用 `GitHub Actions`。
+将仓库导入 Vercel，配置环境变量后部署。GitHub Pages 不适合这个版本，因为它无法运行后端代理，也无法保护 API Key。
